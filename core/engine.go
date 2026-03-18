@@ -1219,6 +1219,33 @@ func (e *Engine) handlePendingPermission(p Platform, msg *Message, content strin
 	iKey := e.interactiveKeyForSessionKey(msg.SessionKey)
 	e.interactiveMu.Lock()
 	state, ok := e.interactiveStates[iKey]
+	// Fallback: if the workspace binding changed after the permission prompt
+	// was sent (e.g. /workspace unbind then rebind), the state may still be
+	// keyed under the old workspace prefix. Scan by suffix so the reply is
+	// not lost and the agent doesn't block forever.
+	if (!ok || state == nil) && e.multiWorkspace {
+		suffix := ":" + msg.SessionKey
+		var pendingMatch *interactiveState
+		pendingCount := 0
+		for key, s := range e.interactiveStates {
+			if strings.HasSuffix(key, suffix) && s != nil {
+				s.mu.Lock()
+				hasPending := s.pending != nil
+				s.mu.Unlock()
+				if hasPending {
+					pendingMatch = s
+					pendingCount++
+				}
+			}
+		}
+		// Only use fallback when exactly one state has a pending permission;
+		// if multiple exist (theoretically after repeated rebinds) the match
+		// is ambiguous and we refuse to guess.
+		if pendingCount == 1 {
+			state = pendingMatch
+			ok = true
+		}
+	}
 	e.interactiveMu.Unlock()
 	if !ok || state == nil {
 		return false

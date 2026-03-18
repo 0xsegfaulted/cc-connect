@@ -1204,6 +1204,55 @@ func TestHandlePendingPermission_MultiWorkspaceLookup(t *testing.T) {
 	}
 }
 
+// TestHandlePendingPermission_MultiWorkspaceFallbackAfterRebind verifies that
+// a pending permission reply is still matched after the channel's workspace
+// binding changes (e.g. /workspace unbind then rebind), because the suffix
+// fallback scan finds the state under the old workspace prefix.
+func TestHandlePendingPermission_MultiWorkspaceFallbackAfterRebind(t *testing.T) {
+	e := newTestEngine()
+
+	bindingPath := filepath.Join(t.TempDir(), "bindings.json")
+	e.SetMultiWorkspace(t.TempDir(), bindingPath)
+
+	channelID := "C999"
+	sessionKey := "slack:" + channelID + ":U1"
+
+	// State was stored under the OLD workspace key.
+	oldKey := "/old/workspace:" + sessionKey
+	pending := &pendingPermission{
+		RequestID: "req-rebind",
+		ToolInput: map[string]any{"cmd": "ls"},
+		Resolved:  make(chan struct{}),
+	}
+	session := &recordingAgentSession{}
+	e.interactiveMu.Lock()
+	e.interactiveStates[oldKey] = &interactiveState{
+		agentSession: session,
+		pending:      pending,
+	}
+	e.interactiveMu.Unlock()
+
+	// Binding now points to a NEW workspace (or is unbound), so
+	// interactiveKeyForSessionKey returns the plain sessionKey.
+	// The suffix fallback should still find the state under oldKey.
+	p := &stubPlatformEngine{n: "test"}
+	msg := &Message{SessionKey: sessionKey, ReplyCtx: "ctx"}
+
+	if !e.handlePendingPermission(p, msg, "allow") {
+		t.Fatal("expected pending permission to be handled via suffix fallback")
+	}
+
+	select {
+	case <-pending.Resolved:
+	default:
+		t.Fatal("expected pending permission to be resolved")
+	}
+
+	if session.calls != 1 {
+		t.Fatalf("RespondPermission calls = %d, want 1", session.calls)
+	}
+}
+
 // --- quiet tests ---
 
 func TestQuietSessionToggle(t *testing.T) {
